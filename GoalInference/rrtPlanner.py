@@ -27,6 +27,88 @@ def StepFromTo(nFrom,zFrom,zTo,epsilon):
         theta = math.atan2(zTo[1]-zFrom[1],zTo[0]-zFrom[0])
         return np.array([zFrom[0] + epsilon*math.cos(theta), zFrom[1] + epsilon*math.sin(theta)])
 
+
+# Test if a segment intersects the obstacle map
+@jit(nopython=True)
+def TestCollisionSegment(posA,posB,pmap): 
+    for s in range(1,100):
+        posNew = (s/100.0)*posA+(1.0-(s/100.0))*posB
+        # Test collision
+        # TODO: replace the value of 100 by a constant
+        if pmap[int(posNew[1]),int(posNew[0])][0]==100:
+            return 1
+    return 0            
+
+# Refinement of a shortest path
+@jit(nopython=True)
+def Refine(pos,path,pmap): 
+    for i in range(1,100):
+        l = len(path)
+        # Select one point randomly on the path (but not the last one)
+        k = np.random.randint(0,l-1)
+        # Select a length
+        d = np.random.randint(2,5)
+        if d+k>l-1:
+            continue
+        # Check if it is possible to shorten the path
+        posA = pos[path[k]]
+        posB = pos[path[k+d]]
+        if TestCollisionSegment(posA,posB,pmap)==1:
+            continue
+        del path[k+1:k+d]    
+
+
+# Evaluate the squared distance from a point pt to a segment
+def SquaredDistanceToSegment(pt,pt1,pt2):
+    # Orthogonal projection of pt on the line pt1,pt2
+    d12sq   = math.pow(pt1[0]-pt2[0],2.0)+math.pow(pt1[1]-pt2[1],2.0)
+    orthdir = np.asarray((pt2[1]-pt1[1],-(pt2[0]-pt1[0])))/math.sqrt(d12sq)
+    proj    = pt+(orthdir[0]*(pt1[0]-pt[0])+orthdir[1]*(pt1[1]-pt[1]))*orthdir    
+    if ((proj[1]-pt1[1])*(pt2[1]-pt1[1])+(proj[0]-pt1[0])*(pt2[0]-pt1[0])<0.0):
+        return (pt[1]-pt1[1])*(pt[1]-pt1[1])+(pt[0]-pt1[0])*(pt[0]-pt1[0])
+    else:
+        if ((proj[1]-pt1[1])*(pt2[1]-pt1[1])+(proj[0]-pt1[0])*(pt2[0]-pt1[0])<d12sq):
+            return (pt[1]-proj[1])*(pt[1]-proj[1])+(pt[0]-proj[0])*(pt[0]-proj[0])
+        else:
+            return (pt[1]-pt2[1])*(pt[1]-pt2[1])+(pt[0]-pt2[0])*(pt[0]-pt2[0])    
+
+# Evaluate the squared distance from a point pt to a path given as an array of points
+def SquaredDistanceToPath(pt,path):
+    rows,cols = path.shape
+    dmin=pow(10.0,20.0)
+    for i in range(0,rows-1):
+        di=SquaredDistanceToSegment(pt,path[i,:],path[i+1,:])
+        if di<dmin:
+            dmin = di
+    return dmin        
+
+# Generate a sub-path
+def GenerateObservedPath(pos,path):
+    # Compute total length
+    l = len(path)
+    t = 0.0
+    for i in range(0,l-1):
+        t = t + math.sqrt(math.pow(pos[path[i+1]][0]-pos[path[i]][0],2.0)+math.pow(pos[path[i+1]][1]-pos[path[i]][1],2.0))
+    tobs = np.random.uniform(0.5*t,t)     
+    t = 0.0
+    obspath = []       
+    for i in range(0,l-1):
+        obspath.append(pos[path[i]])
+        d = math.sqrt(math.pow(pos[path[i+1]][0]-pos[path[i]][0],2.0)+math.pow(pos[path[i+1]][1]-pos[path[i]][1],2.0))
+        if t + d>tobs:
+            lastp = pos[path[i]]+(tobs-t)/d*(pos[path[i+1]]-pos[path[i]])
+            obspath.append(lastp)
+            break    
+        t = t + d    
+    return np.asarray(obspath)   
+
+
+# Shortest path        
+def ShortestPath(graph,source,target,omap):
+    path         = nx.shortest_path(graph, source, target)
+    Refine(graph.pos,path,omap.pixels)
+    return path
+
 class rrtPlanner(): 
     MAXITERATIONS= 4000 
     MAXNODES     = 10000
@@ -84,7 +166,7 @@ class rrtPlanner():
                 continue
     
             # Test collision
-            if (self.obstacleMap.pixels[int(zNew[1]),int(zNew[0])]==obstacleMap.OBSCOLOR).all():
+            if self.obstacleMap.pixels[int(zNew[1]),int(zNew[0])][0]==obstacleMap.OBSCOLOR[0]:
                 continue    
             else:    
                 idNew = len(self.graph.nodes)
@@ -96,5 +178,5 @@ class rrtPlanner():
                 if abs(zNew[1]-self.yg)<self.tolerance and abs(zNew[0]-self.xg)<self.tolerance:
                     self.graph.add_edge(idNew, rrtPlanner.GOALID)
                     self.endCounter = self.endCounter + 1
-        return self.endCounter              
+        return self.endCounter               
               
